@@ -73,6 +73,7 @@ backtest_start_at = input.time(defval = timestamp('01 Jan 2018 00:00 +0700'), ti
 
 // Ichimoku Input
 show_ichimoku = input(false, title="Show Ichimoku Cloud")
+ichimoku_sukudo = input(false, title="Activate Ichimoku Sukudo")
 conversionPeriods = input.int(9, minval=1, title="Conversion Line Length")
 basePeriods = input.int(26, minval=1, title="Base Line Length")
 laggingSpan2Periods = input.int(52, minval=1, title="Leading Span B Length")
@@ -168,11 +169,11 @@ p_price = plot(hl2, "Price", display=display.none, editable=false)
 fill(p_basis, p_price, hl2, zl_basis, na, color.new(trend_col, 20))
 
 // Plot trend shift labels
-plotshape(trend_changed and trend == 1 ? zl_basis : na, "Bullish Trend", 
+plotshape(longCondition ? zl_basis : na, "Bullish Trend", 
      shape.labelup, location.absolute, bullcolor, 
      text="𝑳", textcolor=#000000, size=size.small, force_overlay=true)
 
-plotshape(trend_changed and trend == -1 ? zl_basis : na, "Bearish Trend", 
+plotshape(shortCondition ? zl_basis : na, "Bearish Trend", 
      shape.labeldown, location.absolute, bearcolor, 
      text="𝑺", textcolor=#ffffff, size=size.small, force_overlay=true)
 
@@ -218,12 +219,17 @@ if longCondition
     if show_short
         strategy.close("Short")
 
-if is_kumo_red and is_whole_body_under_current_kumo and is_whole_body_under_tkkj and is_tk_above_kj
+if ichimoku_sukudo and is_kumo_red and is_whole_body_under_current_kumo and is_whole_body_under_tkkj and is_tk_above_kj
     if show_long
         strategy.close("Long")
 
 if shortCondition
-    if show_long and (is_current_kumo_green and is_whole_body_under_current_kumo)
-        strategy.close("Long")
+    if show_long 
+        if ichimoku_sukudo 
+            if is_current_kumo_green and is_whole_body_under_current_kumo
+                strategy.close("Long")
+        else 
+            strategy.close("Long")
+
     if show_short
         strategy.entry("Short", strategy.short)
