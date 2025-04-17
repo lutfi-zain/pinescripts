@@ -1,0 +1,185 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © 0xBujang
+//@version=6
+strategy("0xBujang IchiMMA", overlay = false, default_qty_type = strategy.percent_of_equity, default_qty_value = 100 , initial_capital = 10000)
+// --------------------------
+// Steps
+// 1. Use SMMA Formula ✅
+// 2. Combine the Z Index ✅
+// 3. Filter with Ichimoku ⌚
+// --------------------------
+
+
+
+//Imports
+import TradingView/ta/9
+
+// --------------------------
+// Design Setup
+// --------------------------
+labelLong   = input.bool(false,"Long Signal Lable")
+labelShort   = input.bool(false,"Short Signal Lable")
+labelHalving = input.bool(false,"Halving Date")
+colorUp= #d7baa2
+colorDown= #bcc4df
+colorNetral=color.gray
+backtestStartAt = input.time(defval = timestamp('01 Jan 2018 00:00 +0700'), title="Pilih Tanggal")
+
+// --------------------------
+// Inputs
+// --------------------------
+longThreshold = input.float(0.1, 'Long Threshold', step = 0.1)
+shortThreshold = input.float(-0.1, 'Short Threshold', step = 0.1)
+
+SMMALength   = input.int(18, 'SMMA length')
+SMMASource   = input.source(close,"Source")
+ZLength   = input.int(50,"Z-Score lookback period")
+
+// --------------------------
+// Calculation
+// --------------------------
+SMMACalculation(signalSource, signalLength) =>
+    float SMMA = na
+    SMA = ta.sma(signalSource, signalLength)
+    if bar_index >= signalLength - 1
+        alphaVal = 1 / signalLength
+        SMMA := na(SMMA[1]) ? SMA : (signalSource - SMMA[1]) * alphaVal + SMMA[1]
+        SMMA
+    else
+        SMMA := signalSource
+        SMMA
+    SMMA
+
+SMMA       = SMMACalculation(SMMASource, SMMALength)
+mean       = ta.ema(SMMA, ZLength)
+stDev         = ta.stdev(SMMA, ZLength) 
+ZSMMA     = (SMMA - mean) / stDev 
+
+// --------------------------
+// Decision
+// --------------------------
+longCondition  = ZSMMA > longThreshold
+shortCondition = ZSMMA < shortThreshold
+
+var qualifier = 0
+
+if longCondition and not shortCondition
+    qualifier := 1
+    qualifier
+
+if shortCondition
+    qualifier := -1
+    qualifier
+
+color = qualifier == 1 ? colorUp : qualifier == -1 ? colorDown : colorNetral
+
+pB = plot(ZSMMA,color = color)
+hline(0)
+pL = plot(longThreshold,color = colorUp)
+pS = plot(shortThreshold,color = colorDown)
+
+OB1 = plot(2,display = display.none)
+OB2 = plot(4,color = colorDown)
+OS1 = plot(-2,display = display.none)
+OS2 = plot(-4,color = colorUp)
+fill(OB1, OB2, 4, 2,  color.new(colorDown,20) , color.new(colorDown,90))
+fill(OS1, OS2, -2, -4,  color.new(colorUp,90) , color.new(colorUp,20))
+
+fill(pL, pB, ZSMMA, longThreshold, qualifier > 0 ? color : na, na)
+fill(pS, pB, shortThreshold, ZSMMA, qualifier < 0 ? color : na, na)
+
+// --------------------------
+// Closing
+// --------------------------
+
+longSignal = qualifier == 1 and qualifier[1] != 1  // Switch to LONG
+shortSignal = qualifier == -1 and qualifier[1] != -1 // Switch to SHORT
+
+validTime = time > backtestStartAt
+
+// --------------------------
+// Labels
+// --------------------------
+if longSignal and labelLong and validTime
+    strategy.entry("Long", strategy.long)
+    label.new(x=bar_index, y=-0.1, text="LONG", style=label.style_label_up, color=colorUp, textcolor=color.rgb(55, 120, 57), size=size.small)
+    if labelShort
+        strategy.close("Short")
+
+if shortSignal and validTime
+    strategy.close("Long")
+    if labelShort
+        strategy.entry("Short", strategy.short)
+        label.new(x=bar_index, y=0.1, text="SHORT", style=label.style_label_down, color=colorDown, textcolor=color.red, size=size.small)
+
+// --------------------------
+// CLOSE LONG & CLOSE SHORT Detection
+// TODO
+// 1. Sell signal must when the Z touching the extreme score, and then some step afterward there's kijun & tenkan cross, plus several ichimoku condition 🕧
+// 2. Buy signal same with signal, its just insverted sell signal. 🕧
+// --------------------------
+var float peak_value = na
+var bool has_closed_long = false
+
+var float trough_value = na
+var bool has_closed_short = false
+
+// Reset saat keluar dari long
+if qualifier != 1
+    peak_value := na
+    has_closed_long := false
+
+// Reset saat keluar dari short
+if qualifier != -1
+    trough_value := na
+    has_closed_short := false
+
+// --------------------------
+// CLOSE LONG Logic
+// --------------------------
+if qualifier == 1
+    // Update peak (nilai tertinggi selama LONG)
+    if ZSMMA >= 2.7
+        peak_value := na(peak_value) ? ZSMMA : math.max(peak_value, ZSMMA)
+        // strategy.close("Long")
+
+
+    // TODO
+    // Tampilkan label "Close Long" jika turun dari puncak (hanya sekali per siklus)
+    // if not na(peak_value) and ZSMMA < peak_value and not has_closed_long and labelLong
+    //     label.new(x=bar_index, y=ZSMMA, text="Close Long", style=label.style_label_down, color=colorUp, textcolor=color.white, size=size.small)
+    //     has_closed_long := true
+
+// --------------------------
+// CLOSE SHORT Logic (khusus di zona -1 sampai -4)
+// --------------------------
+if qualifier == -1
+    // Hanya update trough jika berada di dalam area -1 s.d. -4
+    if ZSMMA <= -1.5 and ZSMMA >= -4
+        trough_value := na(trough_value) ? ZSMMA : math.min(trough_value, ZSMMA)
+
+    // TODO
+    // Tampilkan label "Close Short" jika naik dari dasar (hanya sekali per siklus)
+    // if not na(trough_value) and ZSMMA > trough_value and not has_closed_short and labelShort
+    //     label.new(x=bar_index, y=ZSMMA, text="Close Short", style=label.style_label_up, color=colorDown, textcolor=color.white, size=size.small)
+    //     has_closed_short := true
+
+
+// title = str.tostring(peak_value)
+// label.new(x=bar_index, y=3.5, text=title, style=label.style_label_down, color=color.rgb(255, 0, 0), textcolor=color.white, size=size.small)
+
+
+// === BTC HALVING DATES (as timestamps in milliseconds UTC) ===
+halving2012 = timestamp(2012, 11, 28, 0, 0)
+halving2016 = timestamp(2016, 7, 9, 0, 0)
+halving2020 = timestamp(2020, 5, 11, 0, 0)
+halving2024 = timestamp(2024, 4, 19, 0, 0) // estimate
+
+// === CHECK AND LABEL HALVINGS ===
+isHalving = (time >= halving2012 and time < halving2012 + 86400000) or
+     (time >= halving2016 and time < halving2016 + 86400000) or
+     (time >= halving2020 and time < halving2020 + 86400000) or
+     (time >= halving2024 and time < halving2024 + 86400000)
+
+if isHalving and labelHalving
+    label.new(x=bar_index, y=4, text="Halving", style=label.style_label_down, size=size.small, color=colorUp, textcolor=color.white)
