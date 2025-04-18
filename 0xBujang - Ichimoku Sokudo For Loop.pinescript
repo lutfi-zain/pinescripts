@@ -15,6 +15,8 @@ var string loop_settings    = "════════ For Loop Settings ══
 var string thresh_settings  = "════════ Threshold Settings ════════"
 var string visual_settings  = "════════ Visualization Settings ════════"
 var string strategy_settings  = "════════ Strategy Settings ════════"
+var string trenddetect_settings = "════════ Trend Detection Settings (Not Ready: Under Development) ════════"
+
 
 // Tooltips
 tooltip_zl_length     = "Length of the Zero Lag calculation period. Higher values create smoother signals."
@@ -56,9 +58,12 @@ threshold_down = input.int(-1, "Threshold Downtrend",
      tooltip=tooltip_thresh_down)
 
 // Visualization Settings
+
 bullcolor = input.color(#ffdbac, "Bullish Color", group=visual_settings)
 bearcolor = input.color(#96a4d3, "Bearish Color", group=visual_settings)
 show_signals = input.bool(true, "Show Signal Markers", 
+     group=visual_settings, tooltip=tooltip_signals)
+show_trend_basis = input.bool(true, "Show Trend Basis", 
      group=visual_settings, tooltip=tooltip_signals)
 paint_candles = input.bool(true, "Color Candles", 
      group=visual_settings, tooltip=tooltip_candles)
@@ -70,10 +75,11 @@ show_long   = input.bool(true,"Long Signal", group = strategy_settings)
 show_short   = input.bool(false,"Short Signal", group = strategy_settings)
 limit_backtest_time = input.bool(true,"Limit Backtest Time", group = strategy_settings)
 backtest_start_at = input.time(defval = timestamp('01 Jan 2018 00:00 +0700'), title="Backtest Start At", group = strategy_settings)
+reset_trend = input.bool(false, "Reset Trend When No Signal", group=strategy_settings)
 
 // Ichimoku Input
 show_ichimoku = input(false, title="Show Ichimoku Cloud")
-ichimoku_sukudo = input(false, title="Activate Ichimoku Sukudo")
+ichimoku_sokudo = input(false, title="Activate Ichimoku Sokudo")
 conversionPeriods = input.int(9, minval=1, title="Conversion Line Length")
 basePeriods = input.int(26, minval=1, title="Base Line Length")
 laggingSpan2Periods = input.int(52, minval=1, title="Leading Span B Length")
@@ -83,6 +89,18 @@ conversionLine = donchian(conversionPeriods)
 baseLine = donchian(basePeriods)
 leadLine1 = math.avg(conversionLine, baseLine)
 leadLine2 = donchian(laggingSpan2Periods)
+
+// Trend Detection Settings
+use_lr_slope = input.bool(false, "Use Linear Regression Slope", group=trenddetect_settings)
+slope_len = input.int(14, "LR Slope Length", group=trenddetect_settings)
+
+use_fdi = input.bool(false, "Use Fractal Dimension Index", group=trenddetect_settings)
+fdi_len = input.int(21, "FDI Length", group=trenddetect_settings)
+
+use_cmo_roc = input.bool(false, "Use CMO + ROC Combo", group=trenddetect_settings)
+roc_len = input.int(5, "ROC Length", group=trenddetect_settings)
+cmo_len = input.int(9, "CMO Length", group=trenddetect_settings)
+
 
 //              ╔════════════════════════════════╗              //
 //              ║      ZERO LAG CALCULATIONS     ║              //
@@ -105,30 +123,39 @@ forloop_analysis(basis_price) =>
 score = forloop_analysis(zl_basis)
 
 //              ╔════════════════════════════════╗              //
-//              ║        SIGNAL GENERATION       ║              //
+//              ║        TREND ANALYSIS          ║              //
 //              ╚════════════════════════════════╝              //
 
-// Long/Short conditions
-long_signal = score > threshold_up and close > zl_basis + volatility
-short_signal = score < threshold_down and close < zl_basis - volatility
+// Linear Regression Slope
+slope = ta.linreg(close, slope_len, 0) - ta.linreg(close, slope_len, 1)
+is_trending_lr = math.abs(slope) > 0.0
 
-// Trend detection
-var trend = 0
-if long_signal
-    trend := 1
-else if short_signal
-    trend := -1
+// Fractal Dimension Index (FDI)
+hh = ta.highest(high, fdi_len)
+ll = ta.lowest(low, fdi_len)
+n = 0.0
+for i = 0 to fdi_len - 2
+    n += math.abs(close[i] - close[i + 1])
+n /= (fdi_len - 1)
+fdi = math.log10(n) / math.log10(hh - ll)
+is_trending_fdi = fdi < 1.4
 
-// Track trend changes
-var prev_trend = 0
-trend_changed = trend != prev_trend
-prev_trend := trend
+// Chande Momentum Oscillator + Rate of Change (CMO + ROC Combo)
+roc_val = ta.roc(close, roc_len)
+cmo_val = ta.cmo(close, cmo_len)
+is_trending_combo = math.abs(roc_val) > 1 and math.abs(cmo_val) > 30
 
-longCondition = (trend_changed and trend == 1) and (limit_backtest_time ? time > backtest_start_at : true)
-shortCondition = (trend_changed and trend == -1) and (limit_backtest_time ? time > backtest_start_at : true)
+isTrending = (
+     (use_lr_slope and is_trending_lr) or 
+     (use_fdi and is_trending_fdi) or
+     (use_cmo_roc and is_trending_combo)
+     )
 
-// close Ichimoku
+// log.info("isTrending: " + str.tostring(isTrending))
 
+isTrendingIndicatorActive = (use_lr_slope or use_cmo_roc or use_fdi)
+
+// Ichimoku
 currentSSA = leadLine1[26]
 currentSSB = leadLine2[26]
 
@@ -155,6 +182,83 @@ is_tk_above_kj =  baseLine > conversionLine
 is_whole_body_under_tkkj = open <= math.min(conversionLine,baseLine) and close < math.min(conversionLine,baseLine)
 
 //              ╔════════════════════════════════╗              //
+//              ║        SIGNAL GENERATION       ║              //
+//              ╚════════════════════════════════╝              //
+
+// Long/Short conditions
+long_signal = score > threshold_up and close > zl_basis + volatility
+short_signal = score < threshold_down and close < zl_basis - volatility
+
+// Trend detection
+var trend = 0
+if long_signal
+    trend := 1
+else if short_signal
+    if ichimoku_sokudo 
+        if is_current_kumo_green and is_whole_body_under_current_kumo // === ⚠️ Prevent Close if Still in Kouten Trend
+            trend := -1
+    else 
+        trend := -1
+else if reset_trend
+    trend := 0
+
+// === ⚠️ Early Close for Sanyaku Gyakuten
+if ichimoku_sokudo and is_kumo_red and is_whole_body_under_current_kumo and is_whole_body_under_tkkj and is_tk_above_kj
+    trend := -1
+
+// Track trend changes
+var prev_trend = 0
+trend_changed = trend != prev_trend
+prev_trend := trend
+
+
+// Condition
+longCondition = (trend_changed and trend == 1) and (limit_backtest_time ? time > backtest_start_at : true)
+shortCondition = (trend_changed and trend == -1) and (limit_backtest_time ? time > backtest_start_at : true)
+
+finalLongCondition =  (isTrendingIndicatorActive ? isTrending and longCondition : longCondition)
+finalShortCondition =  (isTrendingIndicatorActive ? isTrending  and shortCondition : shortCondition)
+
+//              ╔════════════════════════════════╗              //
+//              ║             STRATEGY           ║              //
+//              ╚════════════════════════════════╝              //
+
+if longCondition
+    if show_long
+        strategy.entry("Long", strategy.long)
+    if show_short
+        strategy.close("Short")
+
+// === ⚠️ Early Close for Sanyaku Gyakuten
+if ichimoku_sokudo and is_kumo_red and is_whole_body_under_current_kumo and is_whole_body_under_tkkj and is_tk_above_kj
+    if show_long
+        strategy.close("Long")
+
+if shortCondition
+    if show_long
+        if ichimoku_sokudo 
+            if is_current_kumo_green and is_whole_body_under_current_kumo // === ⚠️ Prevent Close if Still in Kouten Trend
+                strategy.close("Long")
+        else 
+            strategy.close("Long")
+    if show_short
+        strategy.entry("Short", strategy.short)
+
+longConditionSokudo = longCondition and ichimoku_sokudo ? true : longCondition
+
+//              ╔════════════════════════════════╗              //
+//              ║             ALERTS             ║              //
+//              ╚════════════════════════════════╝              //
+
+alertcondition(ta.crossover(trend, 0),
+     title="Zero Lag Signals Long",
+     message="Zero Lag Signals Long {{exchange}}:{{ticker}}")
+
+alertcondition(ta.crossunder(trend, 0),
+     title="Zero Lag Signals Short",
+     message="Zero Lag Signals Short {{exchange}}:{{ticker}}")
+
+//              ╔════════════════════════════════╗              //
 //              ║         VISUALIZATION          ║              //
 //              ╚════════════════════════════════╝              //
 
@@ -162,18 +266,18 @@ is_whole_body_under_tkkj = open <= math.min(conversionLine,baseLine) and close <
 trend_col = trend == 1 ? bullcolor : trend == -1 ? bearcolor : na
 
 // Plot Zero Lag line
-p_basis = plot(zl_basis, "Zero Lag Basis", color=trend_col, linewidth=3)
+p_basis = plot(show_trend_basis ? zl_basis : na, "Zero Lag Basis", color=trend_col, linewidth=3)
 p_price = plot(hl2, "Price", display=display.none, editable=false)
 
 // Fill between Zero Lag and price
-fill(p_basis, p_price, hl2, zl_basis, na, color.new(trend_col, 20))
+fill(p_basis, p_price, hl2, show_trend_basis ? zl_basis : na, na, color.new(trend_col, 20))
 
 // Plot trend shift labels
-plotshape(longCondition ? zl_basis : na, "Bullish Trend", 
+plotshape(longCondition and show_signals ? zl_basis : na, "Bullish Trend", 
      shape.labelup, location.absolute, bullcolor, 
      text="𝑳", textcolor=#000000, size=size.small, force_overlay=true)
 
-plotshape(shortCondition ? zl_basis : na, "Bearish Trend", 
+plotshape(shortCondition and show_signals ? zl_basis : na, "Bearish Trend", 
      shape.labeldown, location.absolute, bearcolor, 
      text="𝑺", textcolor=#ffffff, size=size.small, force_overlay=true)
 
@@ -198,38 +302,21 @@ plot(show_ichimoku ? (leadLine1 < leadLine2 ? leadLine1 : leadLine2) : na, offse
 fill(p1, p2, color = leadLine1 > leadLine2 ? color.rgb(67, 160, 71, 90) : color.rgb(244, 67, 54, 90))
 
 //              ╔════════════════════════════════╗              //
-//              ║             ALERTS             ║              //
+//              ║        GENERAL FUNCTION        ║              //
 //              ╚════════════════════════════════╝              //
 
-alertcondition(ta.crossover(trend, 0),
-     title="Zero Lag Signals Long",
-     message="Zero Lag Signals Long {{exchange}}:{{ticker}}")
+// Logging function
+// log_event(_price, _object, _toLabel=false) =>
+//     // Format timestamp
+//     ts = str.tostring(year) + "-" + str.tostring(month, "00") + "-" + str.tostring(dayofmonth, "00") + " " + str.tostring(hour, "00") + ":" + str.tostring(minute, "00") + ":" + str.tostring(second, "00")
 
-alertcondition(ta.crossunder(trend, 0),
-     title="Zero Lag Signals Short",
-     message="Zero Lag Signals Short {{exchange}}:{{ticker}}")
+//     msg = ts + " | " + str.tostring(_price, format.mintick) + " | " + str.tostring(_object)
 
-//              ╔════════════════════════════════╗              //
-//              ║             STRATEGY           ║              //
-//              ╚════════════════════════════════╝              //
+//     if _toLabel
+//         label.new(bar_index, low, text=msg, style=label.style_label_up, size=size.small, textcolor=color.white, color=color.gray)
+//     else    
+//         log.info(msg)
 
-if longCondition
-    if show_long
-        strategy.entry("Long", strategy.long)
-    if show_short
-        strategy.close("Short")
 
-if ichimoku_sukudo and is_kumo_red and is_whole_body_under_current_kumo and is_whole_body_under_tkkj and is_tk_above_kj
-    if show_long
-        strategy.close("Long")
-
-if shortCondition
-    if show_long 
-        if ichimoku_sukudo 
-            if is_current_kumo_green and is_whole_body_under_current_kumo
-                strategy.close("Long")
-        else 
-            strategy.close("Long")
-
-    if show_short
-        strategy.entry("Short", strategy.short)
+// // Usage
+// log_event(close, "Long Signal Triggered")
